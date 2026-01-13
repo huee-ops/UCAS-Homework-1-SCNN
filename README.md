@@ -1,38 +1,68 @@
 # UCAS-Homework-1-SCNN
 
-2025年秋季国科大《GPU架构与编程》大作业一：SNN 推理优化
+**2025年秋季国科大《GPU架构与编程》大作业一：基于 CUDA 的 SNN 推理优化**
 
-## 1. 项目简介
-本项目是《GPU架构与编程》课程的大作业一，目标是基于 CUDA 实现并优化 Spiking Convolutional Neural Network (SCNN) 在 FashionMNIST 数据集上的推理过程。
+> **注意**：本 README 同时也作为本次大作业的说明文档。
 
-通过引入 **Mega-Kernel（超大内核）**、**Shared Memory 全驻留** 以及 **SNN 稀疏性计算** 等优化策略，本项目实现了极致的推理性能。
+---
 
-**最终性能 (Final Performance)：**
-* **Accuracy**: 89.78%
-* **Time**: 0.0585s (Total inference time for 10k images)
+## 1. 项目基本信息 (Project Info)
 
-## 2. 核心优化 (Optimizations)
+* **课程名称**：GPU架构与编程
+* **开课学期**：2025年秋季
+* **学生姓名**：
+* **学生学号**：
+* **提交日期**：2026年1月12日
+* **开源链接**：[https://github.com/huee-ops/UCAS-Homework-1-SCNN](https://github.com/huee-ops/UCAS-Homework-1-SCNN)
 
-### 2.1 算子融合与 Mega-Kernel (Kernel Fusion)
-针对 SNN 多时间步（T=8）和小规模网络的特点，将 Conv1-Pool1-Conv2-Pool2-FC1-FC2-FC3 的所有计算层及时间循环融合进**单个 Kernel** (`scnn_inference_mega_kernel`)。
-* **One Block per Image**: 每个 Thread Block 独立处理一张图片。
-* **Zero Intermediate Global Access**: 除了输入图片和最终结果，中间层数据完全不经过 Global Memory。
+---
 
-### 2.2 全片上内存驻留 (Shared Memory Residence)
-利用 Shared Memory 高带宽特性，将网络所有中间层的 Feature Maps (Spikes) 和神经元状态 (Membrane Potential) 全部存储在 Shared Memory 中。
-* **Shared Memory Usage**: 约 45KB / Block (适配大多数现代 GPU)。
+## 2. 性能指标 (Performance)
 
-### 2.3 稀疏性感知计算 (Sparsity Optimization)
-利用 SNN 脉冲的二值特性（0 或 1），在卷积和全连接层实现稀疏计算逻辑。
-* **Skip Zeros**: 仅当输入脉冲非零时才加载权重进行累加，大幅减少无效运算和访存。
+在 FashionMNIST 测试集（10,000 张图片）上的最终测试结果：
 
-## 3. 编译与运行 (Build & Run)
+* **测试集准确率 (Accuracy)**：**89.78%**
+* **总推理耗时 (Total Inference Time)**：**0.0585s**
+
+---
+
+## 3. 核心优化策略 (Optimization Strategy)
+
+本项目针对 SNN（脉冲神经网络）的时间步循环特性和 GPU 硬件架构，实施了以下三大核心优化，实现了极致的推理速度：
+
+### 3.1 算子融合与 Mega-Kernel 架构 (Kernel Fusion)
+传统的深度学习推理往往针对每一层启动一个独立的 Kernel，导致严重的显存带宽瓶颈和 Kernel 启动延迟。
+* **优化方案**：设计了 `scnn_inference_mega_kernel`，将网络的所有层（Conv1, Pool1, Conv2, Pool2, FC1, FC2, FC3）以及时间步循环（T=8）全部融合在一个 Kernel 中。
+* **实现细节**：每个 Thread Block 负责一张图片的完整推理（One Block per Image）。除了输入图像和最终结果，中间数据不再写回 Global Memory。
+
+### 3.2 全片上内存驻留 (Shared Memory Residence)
+配合 Mega-Kernel 架构，本项目利用 Shared Memory 的高带宽低延迟特性，实现了中间数据的全片上存储。
+* **优化方案**：精心规划 Shared Memory 布局，将所有中间层的脉冲输出（Spikes）和神经元膜电位（Vm）全部驻留在 Shared Memory 中。
+* **内存布局**：`s_img` (Input) -> `s_c1` -> `s_p1` -> ... -> `s_output_sum`。
+* **效果**：在推理过程中，实现了对 Global Memory 的“零”中间访问。
+
+### 3.3 SNN 稀疏性感知计算 (Sparsity Optimization)
+利用 SNN 传递信息为二值脉冲（0 或 1）的稀疏特性，大幅减少无效计算。
+* **优化方案**：实现了稀疏卷积和稀疏全连接逻辑 (`device_conv_bias_if_SPARSE`)。
+* **实现细节**：在计算过程中，线程会先检查输入脉冲是否为非零值。仅当 `input != 0` 时，才读取对应的权重进行累加。这有效地跳过了大量无效的乘加运算，进一步提升了吞吐量。
+
+---
+
+## 4. 文件结构 (File Structure)
+
+* `inference.cu`: 核心源代码，包含 Mega-Kernel V3 实现、Host 端调度及数据加载逻辑。
+* `README.md`: 项目说明文档。
+
+---
+
+## 5. 编译与运行 (Build & Run)
 
 ### 环境依赖
-* CUDA Toolkit 11.0+
-* C++11 Compiler
+* **CUDA Toolkit**: 11.0 及以上版本
+* **Compiler**: `nvcc` (支持 C++11)
 
-### 编译
+### 编译命令
+请根据您的 GPU 架构调整 `-arch` 参数（例如 T4 使用 `sm_75`, A100 使用 `sm_80`）。
+
 ```bash
-# 请根据你的 GPU 架构修改 -arch 参数 (例如: sm_75 for T4, sm_80 for A100)
 nvcc -O3 -arch=sm_75 -o scnn_inference inference.cu
